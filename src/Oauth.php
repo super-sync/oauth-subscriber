@@ -20,7 +20,7 @@ use Psr\Http\Message\StreamInterface;
  *
  * @link http://oauth.net/core/1.0/#rfc.section.9.1.1 OAuth specification
  */
-class Oauth1
+class Oauth
 {
     /**
      * Consumer request method constants. See http://oauth.net/core/1.0/#consumer_req_param
@@ -28,7 +28,10 @@ class Oauth1
     const REQUEST_METHOD_HEADER = 'header';
     const REQUEST_METHOD_QUERY  = 'query';
 
-    const SIGNATURE_METHOD_HMAC      = 'HMAC-SHA1';
+    /**
+     * Default signature methods for the three algorithm types
+     */
+    const SIGNATURE_METHOD_HMAC      = 'HMAC-SHA256';
     const SIGNATURE_METHOD_RSA       = 'RSA-SHA1';
     const SIGNATURE_METHOD_PLAINTEXT = 'PLAINTEXT';
 
@@ -59,6 +62,7 @@ class Oauth1
      */
     public function __construct($config)
     {
+        // Defaults
         $this->config = [
             'version'          => '1.0',
             'request_method'   => self::REQUEST_METHOD_HEADER,
@@ -70,6 +74,46 @@ class Oauth1
         foreach ($config as $key => $value) {
             $this->config[$key] = $value;
         }
+
+        /**
+         * This is so that existing code is not deprecated by requirement for a new config to be passed to this constructor.
+         * Only the signature_method param needs to change here
+         */
+        $this->config['hashing_algorithm'] = $this->getHashingAlgorithm();
+
+        return;
+    }
+
+    /**
+     * Gets the hashing algorithm from the selected Signature Method
+     * 
+     * @return string
+     */
+    private function getHashingAlgorithm()
+    {
+        if ($this->config['signature_method'] == 'PLAINTEXT')
+            return $this->config['signature_method'];
+
+        $algo = str_replace('hmac-', '', str_replace('rsa-', '', strtolower($this->config['signature_method'])));
+        $this->checkAlgo($algo);
+
+        return $algo;
+    }
+
+    /**
+     * Checks whether the algorithm is supportable
+     * 
+     * @param string $algo
+     * 
+     * @return void
+     * @throws \RuntimeException
+     */
+    private function checkAlgo($algo)
+    {
+        if (!in_array($algo, hash_hmac_algos()))
+            throw new \RuntimeException("Algorithm \"" . $algo . "\" not supported");
+        
+        return;
     }
 
     /**
@@ -153,19 +197,14 @@ class Oauth1
         );
 
         // Implements double-dispatch to sign requests
-        switch ($this->config['signature_method']) {
-            case Oauth1::SIGNATURE_METHOD_HMAC:
-                $signature = $this->signUsingHmacSha1($baseString);
-                break;
-            case Oauth1::SIGNATURE_METHOD_RSA:
-                $signature = $this->signUsingRsaSha1($baseString);
-                break;
-            case Oauth1::SIGNATURE_METHOD_PLAINTEXT:
-                $signature = $this->signUsingPlaintext($baseString);
-                break;
-            default:
-                throw new \RuntimeException('Unknown signature method: ' . $this->config['signature_method']);
-                break;
+        if (strpos(strtolower($this->config['signature_method']), 'sha') !== false) {
+            $signature = $this->signUsingHmacSha($baseString);
+        } elseif (strpos(strtolower($this->config['signature_method']), 'rsa') !== false) {
+            $signature = $this->signUsingRsaSha($baseString);
+        } elseif ($this->confi['signature_method'] == self::SIGNATURE_METHOD_PLAINTEXT) {
+            $signature = $this->signUsingPlaintext($baseString);
+        } else {
+            throw new \RuntimeException('Unknown signature method: ' . $this->config['signature_method']);
         }
 
         return base64_encode($signature);
@@ -237,12 +276,12 @@ class Oauth1
      *
      * @return string
      */
-    private function signUsingHmacSha1($baseString)
+    private function signUsingHmacSha($baseString)
     {
         $key = rawurlencode($this->config['consumer_secret'])
             . '&' . rawurlencode($this->config['token_secret']);
 
-        return hash_hmac('sha1', $baseString, $key, true);
+        return hash_hmac(strtolower($this->config['hashing_algorithm']), $baseString, $key, true);
     }
 
     /**
@@ -250,7 +289,7 @@ class Oauth1
      *
      * @return string
      */
-    private function signUsingRsaSha1($baseString)
+    private function signUsingRsaSha($baseString)
     {
         if (!function_exists('openssl_pkey_get_private')) {
             throw new \RuntimeException('RSA-SHA1 signature method '
